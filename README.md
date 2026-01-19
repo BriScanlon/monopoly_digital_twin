@@ -1,5 +1,7 @@
 Monopoly: Digital Twin & Analyst Agent
-Monopoly, but with Nueral leaning.
+Monopoly, but with Nueral learning.
+
+Built along side Gemini Code.
 
 It’s a proof-of-concept demonstrating how to combine a Simulation Engine, a Reinforcement Learning Agent, and a Local LLM Analyst into a single system.
 
@@ -77,6 +79,6 @@ This brings up the visual interface where you can watch the AI play against itse
 Bash
 PYTHONPATH=. streamlit run dashboard/app.py
 📊 Observations
-Trading Logic: The agent attempts trades on ~65% of turns. It realized that "asking is free."
+Trading Logic: The agent attempts trades on ~65% of turns. It realised that "asking is free."
 
 Validation: In a 500-game simulation, win rates were evenly distributed, proving the model is stable and not relying on first-mover advantage.
