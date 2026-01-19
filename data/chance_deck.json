@@ -1,0 +1,18 @@
+[
+  { "id": "c1", "text": "Advance to Go (Collect £200)", "action": "move_abs", "value": 0 },
+  { "id": "c2", "text": "Advance to Trafalgar Square. If you pass Go, collect £200", "action": "move_abs", "value": 24 },
+  { "id": "c3", "text": "Advance to Pall Mall. If you pass Go, collect £200", "action": "move_abs", "value": 11 },
+  { "id": "c4", "text": "Advance to Mayfair", "action": "move_abs", "value": 39 },
+  { "id": "c5", "text": "Advance to the nearest Station. If unowned, you may buy it from the Bank. If owned, pay owner twice the rental to which they are otherwise entitled.", "action": "move_nearest", "value": "station", "modifier": "double_rent" },
+  { "id": "c6", "text": "Advance to the nearest Station. If unowned, you may buy it from the Bank. If owned, pay owner twice the rental to which they are otherwise entitled.", "action": "move_nearest", "value": "station", "modifier": "double_rent" },
+  { "id": "c7", "text": "Advance to nearest Utility. If unowned, you may buy it from the Bank. If owned, throw dice and pay owner a total ten times the amount thrown.", "action": "move_nearest", "value": "utility", "modifier": "ten_times" },
+  { "id": "c8", "text": "Bank pays you dividend of £50", "action": "earn", "value": 50 },
+  { "id": "c9", "text": "Get Out of Jail Free", "action": "jail_free", "value": 0 },
+  { "id": "c10", "text": "Go Back 3 Spaces", "action": "move_rel", "value": -3 },
+  { "id": "c11", "text": "Go to Jail. Go directly to Jail, do not pass Go, do not collect £200", "action": "go_jail", "value": 0 },
+  { "id": "c12", "text": "Make general repairs on all your property. For each house pay £25. For each hotel pay £100", "action": "repairs", "value": {"house": 25, "hotel": 100} },
+  { "id": "c13", "text": "Speeding fine £15", "action": "pay", "value": 15 },
+  { "id": "c14", "text": "Take a trip to Kings Cross Station. If you pass Go, collect £200", "action": "move_abs", "value": 5 },
+  { "id": "c15", "text": "You have been elected Chairman of the Board. Pay each player £50", "action": "pay_all", "value": 50 },
+  { "id": "c16", "text": "Your building loan matures. Collect £150", "action": "earn", "value": 150 }
+]

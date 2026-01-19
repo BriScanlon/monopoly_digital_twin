@@ -1,0 +1,16 @@
+# Python ignore list
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+.env
+
+# Model files (Optional: keep if you want to back up your brains)
+# models/ 
+
+# OS generated files
+.DS_Store
+Thumbs.db
+*.csv
