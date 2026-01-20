@@ -1,176 +1,192 @@
 import sys
 import os
-
 import streamlit as st
 import pandas as pd
-import time
 import torch
-import random
-from core.engine import MonopolyEngine
-from ai.inference import MonopolyExpert
-from analyst.agent import call_ollama
-
-
 
 # --- PATH FIX ---
-# This tells Python to look for modules in the project root (one level up)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from core.engine import MonopolyEngine
+from core.player import Player
+from ai.rl_agent import Agent
+from ai.state_encoder import StateEncoder
+
 # --- PAGE CONFIG ---
-st.set_page_config(
-    page_title="LucenFlow AI: Monopoly Expert",
-    page_icon="🎩",
-    layout="wide"
-)
+st.set_page_config(page_title="LucenFlow Monopoly Twin", layout="wide")
+# Remove default top padding
+st.markdown("""
+    <style>
+        .block-container {
+            padding-top: 3rem;
+            padding-bottom: 0rem;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
-# --- CACHED RESOURCES (Load once) ---
-@st.cache_resource
-def load_expert():
-    # Load the GPU Brain
-    return MonopolyExpert(model_path="models/monopoly_ai_trading.pth")
+# --- CUSTOM ENGINE ---
+class DashboardEngine(MonopolyEngine):
+    def __init__(self):
+        super().__init__()
+        self.ai_decision = 1 # Default to Buy
 
-@st.cache_resource
-def load_engine():
-    # Initialize a fresh engine
-    return MonopolyEngine(num_players=4)
+    def set_ai_decision(self, action):
+        self.ai_decision = action
 
-expert = load_expert()
-# We don't cache the engine state itself, just the class/structure if needed
-# But for Streamlit session state, we manage the engine instance manually below.
-
-# --- SESSION STATE INITIALIZATION ---
-if 'engine' not in st.session_state:
-    st.session_state.engine = MonopolyEngine(num_players=4)
-    st.session_state.game_log = []
-    st.session_state.turn_count = 0
-    st.session_state.analyst_commentary = "Waiting for game data..."
-
-# --- SIDEBAR: CONTROLS ---
-st.sidebar.title("🎮 Control Panel")
-run_mode = st.sidebar.radio("Mode", ["Manual Step", "Auto-Play (Fast)"])
-step_btn = st.sidebar.button("👉 Run Next Turn")
-reset_btn = st.sidebar.button("🔄 Reset Game")
-
-# --- ANALYST AGENT (LLM) ---
-st.sidebar.markdown("---")
-st.sidebar.subheader("🎙️ Analyst Agent (Llama 3)")
-if st.sidebar.button("📢 Generate Commentary"):
-    if len(st.session_state.game_log) < 5:
-        st.sidebar.warning("Not enough game history yet!")
-    else:
-        with st.sidebar.status("Analyst is thinking..."):
-            # Summarize last 10 events
-            recent_logs = st.session_state.game_log[-15:]
-            prompt = f"""
-            You are an Esports Commentator. Here is the recent action in a Monopoly AI Match:
-            {recent_logs}
+    def _handle_property(self, player, space, log):
+        if space['owner'] is None:
+            can_afford = player.cash > space['price']
+            wants_to_buy = (self.ai_decision == 1)
             
-            Write a 2-sentence hype commentary on the current situation. 
-            Focus on whoever is winning or making trades.
-            """
-            response = call_ollama(prompt)
-            st.session_state.analyst_commentary = response
+            if can_afford and wants_to_buy:
+                player.buy_property(space)
+                space['owner'] = player.id
+                log['result'] = "bought_property"
+            else:
+                log['result'] = "pass_choice" if can_afford else "pass_no_money"
+        elif space['owner'] != player.id:
+            rent = space['rent']
+            amount = player.pay(rent)
+            self.players[space['owner']].receive(amount)
+            log['result'] = f"paid_rent_{amount}"
+        else:
+            log['result'] = "already_owned"
 
-st.sidebar.info(st.session_state.analyst_commentary)
-
-# --- MAIN LOGIC ---
-if reset_btn:
-    st.session_state.engine.reset(num_players=4)
+# --- INITIALIZATION ---
+if 'engine' not in st.session_state:
+    st.session_state.engine = DashboardEngine()
     st.session_state.game_log = []
     st.session_state.turn_count = 0
-    st.rerun()
+    st.session_state.ai_stats = {"decisions": [], "net_worth": []}
+
+    device = torch.device("cpu")
+    agent = Agent(state_size=176, action_size=3, device=device)
+    
+    model_path = os.path.join(os.path.dirname(__file__), '../models/monopoly_ai_trading.pth')
+    if os.path.exists(model_path):
+        try:
+            agent.model.load_state_dict(torch.load(model_path, map_location=device))
+            st.session_state.agent = agent
+        except Exception as e:
+            st.error(f"Model load failed: {e}")
+    else:
+        st.session_state.agent = agent
+
+    st.session_state.encoder = StateEncoder()
+
+# --- LOGIC ---
 def run_turn():
     engine = st.session_state.engine
+    agent = st.session_state.agent
+    encoder = st.session_state.encoder
     
-    # 1. AI DECISION PHASE
     current_player = engine.players[engine.current_player_idx]
+    state = encoder.encode(current_player, engine.players, engine.board.spaces)
     
-    # Encode state for the brain
-    from ai.state_encoder import StateEncoder
-    encoder = StateEncoder()
-    state_vector = encoder.encode(current_player, engine.players, engine.board.spaces)
-    
-    # Ask the Brain
-    brain_output = expert.predict(state_vector)
-    
-    # Store Brain Stats for UI
-    st.session_state.last_brain_stats = brain_output
-    
-    # 2. EXECUTE ENGINE TURN
+    # AI Decision
+    if current_player.id == 0:
+        action = agent.act(state)
+        with torch.no_grad():
+            state_t = torch.FloatTensor(state).unsqueeze(0).to(agent.device)
+            q_values = agent.model(state_t).cpu().numpy()[0]
+        st.session_state.last_q_values = q_values
+        st.session_state.last_action = action
+    else:
+        action = 1
+        st.session_state.last_action = None
+
+    engine.set_ai_decision(action)
     log = engine.run_turn()
-    st.session_state.turn_count += 1
     
-    # --- ROBUST LOGGING FIX ---
-    # Handle cases where 'player' or 'space' might be missing (e.g. Game Over)
-    player_id = log.get('player', '?')
+    # Trade Logic
+    trade_msg = ""
+    if current_player.id == 0 and action == 2:
+        success, msg = engine.try_smart_trade(current_player.id)
+        if success:
+            trade_msg = f" [TRADE: {msg}]"
+            log['trade_event'] = True
+
+    # Logging
+    st.session_state.turn_count += 1
+    player_label = f"P{log.get('player', '?')}"
     space_name = log.get('space', 'Unknown')
     result_text = log.get('result', log.get('event', 'Event'))
-    
-    if log.get('event') == 'game_over':
-        summary = f"Turn {st.session_state.turn_count}: 🏁 GAME OVER!"
-    else:
-        summary = f"Turn {st.session_state.turn_count}: P{player_id} landed on {space_name} ({result_text})"
-    
-    if log.get('trade_event'):
-        summary += " [TRADE ATTEMPTED]"
-        
-    st.session_state.game_log.append(summary)
+    summary = f"T{st.session_state.turn_count}: {player_label} @ {space_name} ({result_text}){trade_msg}"
+    st.session_state.game_log.insert(0, summary)
 
-# Auto-Play Logic
-if run_mode == "Auto-Play (Fast)" and step_btn:
-    for _ in range(10): # Run 10 turns at once
+# --- SIDEBAR ---
+with st.sidebar:
+    st.title("🎮 Controls")
+    if st.button("Run Turn", type="primary", use_container_width=True):
         run_turn()
-elif run_mode == "Manual Step" and step_btn:
-    run_turn()
+    if st.button("Reset Game", use_container_width=True):
+        st.session_state.engine = DashboardEngine()
+        st.session_state.game_log = []
+        st.session_state.turn_count = 0
+        st.rerun()
 
-# --- UI LAYOUT ---
-st.title("🎩 LucenFlow Monopoly: The Digital Twin")
+# --- MAIN LAYOUT (3 COLUMNS) ---
+col_board, col_brain, col_log = st.columns([2, 1.2, 1])
 
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    st.subheader("📍 Live Board State")
-    
-    # Create a DataFrame for the board
+# COLUMN 1: BOARD
+with col_board:
+    st.subheader("📍 Board State")
     board_data = []
-    players = st.session_state.engine.players
-    
-    # Simple ASCII-style list for now, or a metric grid
-    for p in players:
-        pos_name = st.session_state.engine.board.get_space(p.position)['name']
+    for s in st.session_state.engine.board.spaces:
+        owner = f"P{s['owner']}" if s['owner'] is not None else "-"
+        # Simplified Color Logic for display
+        color = s.get('group', 'Special') 
+        if color is None: color = "Special"
+        
         board_data.append({
-            "Player": f"Player {p.id}",
-            "Position": pos_name,
-            "Cash": f"£{p.cash}",
-            "Net Worth": f"£{p.get_net_worth(st.session_state.engine.board)}",
-            "Status": "JAIL" if p.in_jail else "Active"
+            "Space": s['name'],
+            "Grp": color,
+            "Cost": s.get('price', 0),
+            "Own": owner,
+            "Rent": s.get('rent', 0)
         })
-    
-    st.dataframe(pd.DataFrame(board_data), hide_index=True)
+    df = pd.DataFrame(board_data)
+    # Taller board, scannable
+    st.dataframe(df, height=600, use_container_width=True, hide_index=True)
 
-    st.markdown("### 📜 Game Log")
-    for line in reversed(st.session_state.game_log[-8:]):
-        st.text(line)
-
-with col2:
-    st.subheader("🧠 Neural Network Live Feed")
+# COLUMN 2: BRAIN
+with col_brain:
+    st.subheader("🧠 AI Brain (P0)")
+    p0 = st.session_state.engine.players[0]
     
-    if 'last_brain_stats' in st.session_state:
-        stats = st.session_state.last_brain_stats
+    # Compact Metrics
+    c1, c2 = st.columns(2)
+    c1.metric("Cash", f"£{p0.cash}")
+    c2.metric("Net Worth", f"£{p0.get_net_worth_raw()}")
+    
+    st.divider()
+    
+    # Decision Chart
+    if hasattr(st.session_state, 'last_q_values'):
+        q = st.session_state.last_q_values
+        actions = ["Pass", "Buy", "Trade"]
         
-        # 1. Recommendation
-        rec = stats['recommendation']
-        color = "green" if rec == "BUY" else "orange" if rec == "TRADE" else "grey"
-        st.markdown(f"### Recommendation: :{color}[{rec}]")
-        
-        # 2. Confidence
-        st.metric("Confidence Score", f"{stats['confidence_score']:.2f}")
-        
-        # 3. Q-Values Chart
-        q_data = pd.DataFrame({
-            "Action": list(stats['q_values'].keys()),
-            "Value": list(stats['q_values'].values())
-        })
-        st.bar_chart(q_data, x="Action", y="Value", color="Action")
-    else:
-        st.info("Start the game to see Brain activity.")
+        # Safe Action Display
+        chosen_idx = st.session_state.get('last_action')
+        if chosen_idx is not None:
+            st.success(f"Action: **{actions[chosen_idx]}**")
+        else:
+            st.info("Waiting for AI...")
+            
+        chart_data = pd.DataFrame({"Action": actions, "Value": q})
+        st.bar_chart(chart_data, x="Action", y="Value", height=200)
+
+    # Property List (Collapsible)
+    with st.expander(f"Portfolio ({len(p0.properties)})", expanded=True):
+        if p0.properties:
+            for p in p0.properties:
+                st.caption(f"🏠 {p['name']} ({p['group']})")
+        else:
+            st.caption("No Assets")
+
+# COLUMN 3: LOGS
+with col_log:
+    st.subheader("📜 Event Log")
+    # Join logs into a single string for text_area
+    log_text = "\n".join(st.session_state.game_log)
+    st.text_area("History", value=log_text, height=600, label_visibility="collapsed")

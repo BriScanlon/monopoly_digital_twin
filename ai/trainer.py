@@ -3,112 +3,160 @@ import numpy as np
 import os
 import random
 from core.engine import MonopolyEngine
-from ai.rl_agent import Agent
 from ai.state_encoder import StateEncoder
+from ai.rl_agent import Agent
 
-# --- TRY IMPORTING DIRECTML FOR AMD GPU ---
-try:
-    import torch_directml
-    device = torch_directml.device()
-    print(f"🚀 SUCCESS: AMD GPU Detected via DirectML ({device})")
-except ImportError:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"⚠️ DirectML not found. Using: {device}")
-
-# --- CONFIGURATION ---
+# --- HYPERPARAMETERS ---
 EPISODES = 2000
-SAVE_INTERVAL = 100
-MODEL_NAME = "monopoly_ai_trading.pth"
+BATCH_SIZE = 64
+GAMMA = 0.99
+EPSILON_START = 1.0
+EPSILON_END = 0.01
+EPSILON_DECAY = 0.998 
+TARGET_UPDATE = 10
+MAX_STEPS_PER_GAME = 200  # Prevents infinite stalemates
 
+# --- SMART ENGINE SUBCLASS ---
 class TrainingEngine(MonopolyEngine):
-    def __init__(self, agent, encoder):
-        super().__init__(num_players=4)
-        self.agent = agent
-        self.encoder = encoder
-        self.memories = [] 
+    def __init__(self):
+        super().__init__()
+        self.ai_decision = 0 # 0=Pass, 1=Buy, 2=Trade
 
-    def _ai_decision_trade(self, player) -> bool:
-        if player.id != self.current_player_idx: return False
-        state = self.encoder.encode(player, self.players, self.board.spaces)
-        action = self.agent.act(state)
-        self.memories.append((state, action, player.id))
-        return (action == 2)
+    def set_ai_decision(self, action):
+        self.ai_decision = action
 
-    def _ai_decision_buy(self, player, space) -> bool:
-        if player.id != self.current_player_idx:
-            return (player.cash > space['price'])
-        state = self.encoder.encode(player, self.players, self.board.spaces)
-        action = self.agent.act(state)
-        self.memories.append((state, action, player.id))
-        return (action == 1)
+    def _handle_property(self, player, space, log):
+        """Overrides the core engine's property handling."""
+        if space['owner'] is None:
+            # AI DECISION POINT
+            can_afford = player.cash > space['price']
+            
+            # If Action 1 (Buy) is chosen, we buy.
+            # If Action 2 (Trade) is chosen, we also buy (don't miss assets while trading).
+            wants_to_buy = (self.ai_decision == 1) or (self.ai_decision == 2)
 
-def run_training():
-    print(f"--- Starting GPU Training for {EPISODES} Episodes ---")
+            if can_afford and wants_to_buy:
+                player.buy_property(space)
+                space['owner'] = player.id
+                log['result'] = "bought_property"
+            else:
+                log['result'] = "pass_choice" if can_afford else "pass_no_money"
+                
+        elif space['owner'] != player.id:
+            rent = space['rent']
+            amount = player.pay(rent)
+            self.players[space['owner']].receive(amount)
+            log['result'] = f"paid_rent_{amount}"
+        else:
+            log['result'] = "already_owned"
+
+def calculate_reward(player, prev_state, log, trade_success):
+    reward = 0
+    action_result = log.get('result', '')
     
+    # 1. THE PANIC BUTTON (Liquidity check)
+    if player.cash < 50:
+        reward -= 20.0 # Extreme Danger
+    elif player.cash < 200:
+        reward -= 5.0  # Caution
+        
+    # 2. TRADE REWARD
+    if trade_success:
+        print(f"\n💰 AI MADE A DEAL! ({log['player']})")
+        reward += 30.0 
+        
+    # 3. BUYING LOGIC
+    if "bought_property" in action_result:
+        if player.cash > 250:
+            reward += 10.0
+        else:
+            reward -= 5.0 # Risky buy
+            
+    # 4. BANKRUPTCY
+    if "bankrupt" in action_result:
+        return -500.0
+
+    # 5. SURVIVAL
+    reward += 0.1
+    
+    return reward
+
+def train():
+    print("--- Initializing Strategy Training (Set Completer) ---")
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+    
+    engine = TrainingEngine()
     encoder = StateEncoder()
-    # Pass the GPU device to the Agent
-    agent = Agent(state_size=encoder.observation_space_size, action_size=3)
-    agent.device = device 
-    agent.model.to(device) # Move Brain to GPU
+    # Corrected input size for the new Encoder
+    agent = Agent(state_size=176, action_size=3, device=device)
     
-    # SLOW DECAY: We want to reach min_epsilon (0.01) around episode 1500
-    # Formula: 0.01 = 1.0 * (decay ^ 1500)  -> decay approx 0.997
-    agent.epsilon_decay = 0.997 
-    
-    engine = TrainingEngine(agent, encoder)
-    scores = []
-    
+    # Load previous brain
+    if os.path.exists("models/monopoly_ai_trading.pth"):
+        try:
+            agent.model.load_state_dict(torch.load("models/monopoly_ai_trading.pth"))
+            agent.epsilon = 0.4 
+            print("Loaded existing brain.")
+        except:
+            print("Starting fresh.")
+
     for e in range(1, EPISODES + 1):
-        engine.reset(num_players=4)
+        engine.reset()
+        state = encoder.encode(engine.players[0], engine.players, engine.board.spaces)
         
-        while not engine.game_over:
+        total_reward = 0
+        done = False
+        step_count = 0
+        
+        while not done and step_count < MAX_STEPS_PER_GAME:
+            step_count += 1
             current_player = engine.players[engine.current_player_idx]
-            old_net_worth = current_player.get_net_worth(engine.board)
-            engine.memories = []
             
-            turn_result = engine.run_turn()
+            # 1. AI Action
+            action = agent.act(state)
             
-            # --- BATCH TRAINING ---
-            if engine.memories:
-                new_net_worth = current_player.get_net_worth(engine.board)
-                base_reward = (new_net_worth - old_net_worth) / 100.0
-                
-                # Big reward for successful trades
-                if turn_result.get('trade_event'):
-                    base_reward += 10.0 
-                
-                # Penalty for bankruptcy
-                if current_player.is_bankrupt:
-                    base_reward = -10.0
-                    done = True
-                else:
-                    done = False
+            # 2. Configure Engine
+            engine.set_ai_decision(action)
+            
+            # 3. Execute Turn
+            log = engine.run_turn()
+            
+            # 4. Handle TRADING
+            trade_happened = False
+            if action == 2 and not engine.game_over:
+                success, msg = engine.try_smart_trade(current_player.id)
+                if success:
+                    trade_happened = True
+                    log['result'] = msg 
+            
+            # 5. Reward & Train
+            next_state = encoder.encode(current_player, engine.players, engine.board.spaces)
+            reward = calculate_reward(current_player, state, log, trade_happened)
+            
+            if current_player.id == 0:
+                agent.train(state, action, reward, next_state, engine.game_over)
+                total_reward += reward
+                state = next_state
+            
+            if step_count >= MAX_STEPS_PER_GAME:
+                done = True
+            else:
+                done = engine.game_over
 
-                next_state = encoder.encode(current_player, engine.players, engine.board.spaces)
-                
-                # TRAIN LOOP
-                for mem in engine.memories:
-                    state, action, pid = mem
-                    if pid == current_player.id:
-                        agent.train(state, action, base_reward, next_state, done)
-
-        # --- CORRECT DECAY LOCATION: ONCE PER GAME ---
-        if agent.epsilon > agent.epsilon_min:
-            agent.epsilon *= agent.epsilon_decay
-
-        # Logging
-        winner = max(engine.players, key=lambda p: p.get_net_worth(engine.board))
-        scores.append(winner.get_net_worth(engine.board))
+        # Epsilon Decay
+        if agent.epsilon > EPSILON_END:
+            agent.epsilon *= EPSILON_DECAY
         
-        if e % 50 == 0:
-            avg = sum(scores[-50:]) / 50
-            print(f"Ep {e}/{EPISODES} | Avg Win: £{avg:.0f} | Epsilon: {agent.epsilon:.4f}")
+        # Feedback
+        if e % 10 == 0:
+            print(f"Ep {e}...", end="\r")
             
-        if e % SAVE_INTERVAL == 0:
-            os.makedirs("models", exist_ok=True)
-            agent.save(f"models/{MODEL_NAME}")
+        if e % 100 == 0:
+            print(f"Ep {e}/{EPISODES} | Reward: {total_reward:.1f} | Epsilon: {agent.epsilon:.2f}")
+            agent.save("models/monopoly_ai_trading.pth")
 
-    print("--- GPU Training Complete ---")
+    print("\n--- Strategy Training Complete ---")
 
 if __name__ == "__main__":
-    run_training()
+    train()

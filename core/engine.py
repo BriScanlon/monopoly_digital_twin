@@ -1,259 +1,271 @@
 import random
-from typing import List, Dict, Any
+import json
+from .player import Player
 
-from core.board import Board
-from core.dice import Dice
-from core.player import Player
-from core.bank import Bank
-from core.cards import CardManager
+class Board:
+    def __init__(self):
+        self.spaces = self._init_spaces()
+        # Define color groups for "Set Completer" logic
+        self.color_groups = {
+            "Brown": [1, 3],
+            "L.Blue": [6, 8, 9],
+            "Pink": [11, 13, 14],
+            "Orange": [16, 18, 19],
+            "Red": [21, 23, 24],
+            "Yellow": [26, 27, 29],
+            "Green": [31, 32, 34],
+            "D.Blue": [37, 39]
+        }
+
+    def _init_spaces(self):
+        spaces = []
+        groups = ["Brown", "L.Blue", "Pink", "Orange", "Red", "Yellow", "Green", "D.Blue"]
+        group_prices = [60, 100, 140, 180, 220, 260, 300, 350] 
+        
+        for i in range(40):
+            space = {
+                "id": i,
+                "name": f"Space {i}",
+                "type": "property",
+                "price": 0,
+                "rent": 0,
+                "owner": None,
+                "houses": 0,
+                "mortgaged": False,
+                "group": None
+            }
+            
+            if i % 10 == 0:
+                space["type"] = "corner"
+                space["name"] = ["GO", "Jail", "Free Parking", "Go To Jail"][i//10]
+            elif i in [2, 7, 17, 22, 33, 36]:
+                space["type"] = "action"
+                space["name"] = "Community Chest" if i in [2, 17, 33] else "Chance"
+            elif i in [4, 38]:
+                space["type"] = "tax"
+                space["name"] = "Income Tax" if i == 4 else "Super Tax"
+                space["rent"] = 200 if i == 4 else 100
+            elif i in [5, 15, 25, 35]:
+                space["type"] = "railroad"
+                space["name"] = f"Station {i}"
+                space["price"] = 200
+                space["rent"] = 25
+                space["group"] = "Rail"
+            elif i in [12, 28]:
+                space["type"] = "utility"
+                space["name"] = "Utility"
+                space["price"] = 150
+                space["group"] = "Utility"
+            else:
+                g_idx = 0
+                if i > 5: g_idx = 1
+                if i > 10: g_idx = 2
+                if i > 15: g_idx = 3 
+                if i > 20: g_idx = 4
+                if i > 25: g_idx = 5
+                if i > 30: g_idx = 6
+                if i > 35: g_idx = 7
+                
+                space["group"] = groups[g_idx]
+                space["price"] = group_prices[g_idx]
+                space["rent"] = int(space["price"] * 0.1)
+                space["name"] = f"{space['group']} Street {i}"
+                
+                if i == 39: space["name"] = "Mayfair"
+                if i == 37: space["name"] = "Park Lane"
+                if i == 19: space["name"] = "Vine Street" 
+
+            spaces.append(space)
+        return spaces
+
+    def get_space(self, index):
+        return self.spaces[index]
 
 class MonopolyEngine:
-    def __init__(self, num_players: int = 4):
+    def __init__(self, num_players=4):
         self.board = Board()
-        self.dice = Dice()
-        self.bank = Bank(initial_cash=20580, allow_infinite=True)
-        self.card_manager = CardManager()
-        self.players = [Player(i) for i in range(num_players)]
-        
-        self.current_player_idx = 0
-        self.turn_count = 0
-        self.game_over = False
-        self.max_turns = 1000
-
-    def reset(self, num_players: int = 4):
-        self.board.reset()
-        self.bank.reset()
-        self.dice.reset_doubles()
-        self.card_manager = CardManager()
-        self.players = [Player(i) for i in range(num_players)]
+        self.players = [Player(i, f"Player {i}") for i in range(num_players)]
         self.current_player_idx = 0
         self.turn_count = 0
         self.game_over = False
 
-    def run_turn(self) -> Dict[str, Any]:
+    def reset(self, num_players=4):
+        self.board = Board()
+        self.players = [Player(i, f"Player {i}") for i in range(num_players)]
+        self.current_player_idx = 0
+        self.turn_count = 0
+        self.game_over = False
+
+    def roll_dice(self):
+        d1 = random.randint(1, 6)
+        d2 = random.randint(1, 6)
+        return d1 + d2, (d1 == d2)
+
+    def run_turn(self):
         if self.game_over:
             return {"event": "game_over"}
 
         player = self.players[self.current_player_idx]
         
-        if player.is_bankrupt:
-            self._next_player()
-            return {"event": "skip", "player": player.id}
+        if player.cash <= 0:
+            self._next_turn()
+            return {"player": player.id, "event": "skip_bankrupt", "result": "bankrupt"}
 
+        # 1. Roll & Move
+        steps, double = self.roll_dice()
+        
         if player.in_jail:
-            return self._handle_jail_turn(player)
+            if double:
+                player.in_jail = False
+                player.jail_turns = 0
+            else:
+                player.jail_turns += 1
+                if player.jail_turns >= 3:
+                    player.pay(50)
+                    player.in_jail = False
+                    player.jail_turns = 0
+                else:
+                    self._next_turn()
+                    return {"player": player.id, "space": "Jail", "result": "jail_stay", "cash": player.cash}
 
-        # --- NEW: PRE-ROLL TRADING PHASE ---
-        # The AI decides if it wants to try and trade BEFORE rolling
-        trade_log = None
-        if self._ai_decision_trade(player):
-            trade_result = self._execute_trade_attempt(player)
-            if trade_result:
-                trade_log = trade_result
-
-        # 1. Roll Dice
-        roll_total, is_double = self.dice.roll()
+        player.move(steps)
+        space = self.board.get_space(player.position)
         
-        # Speeding Check
-        if self.dice.doubles_count >= 3:
-            player.go_to_jail()
-            self._next_player()
-            return {"event": "jail_speeding", "player": player.id}
-
-        # 2. Move
-        passed_go = player.move(roll_total)
-        if passed_go:
-            salary = self.bank.withdraw(200)
-            player.receive(salary)
-
-        # 3. Handle Landing
-        current_space = self.board.get_space(player.position)
-        result = self._handle_space_landing(player, current_space, roll_total)
-        
-        # 4. Post-Turn Logic
-        if not is_double:
-            self._next_player()
-        elif player.is_bankrupt:
-            self._next_player()
-        
-        self.turn_count += 1
-        if self.turn_count >= self.max_turns:
-            self.game_over = True
-
-        # Return full log
-        return {
+        log = {
             "player": player.id,
-            "roll": roll_total,
-            "is_double": is_double,
             "position": player.position,
-            "space": current_space['name'],
+            "space": space['name'],
             "cash": player.cash,
-            "bank_cash": self.bank.cash_reserves,
-            "result": result,
-            "trade_event": trade_log # <--- Log the trade if it happened
+            "trade_event": False
         }
 
-    def _handle_space_landing(self, player: Player, space: Dict, roll: int):
-        space_type = space['type']
+        # 2. Handle Space Event
+        if space['type'] == 'property' or space['type'] == 'railroad' or space['type'] == 'utility':
+            self._handle_property(player, space, log)
+        elif space['type'] == 'tax':
+            player.pay(space['rent'])
+            log['result'] = f"paid_tax_{space['rent']}"
+        elif space['name'] == "Go To Jail":
+            player.position = 10 
+            player.in_jail = True
+            log['result'] = "sent_to_jail"
+        else:
+            log['result'] = "landed_safe"
 
-        if space_type == 'property':
-            return self._handle_property(player, space)
-        elif space_type == 'tax':
-            amount = space['amount']
-            if player.pay(amount):
-                self.bank.deposit(amount)
-                return f"paid_tax_{amount}"
-            return "bankrupt"
-        elif space_type == 'go_to_jail':
-            player.go_to_jail()
-            return "sent_to_jail"
-        elif space_type == 'chance':
-            card = self.card_manager.draw_chance()
-            return self._apply_card(player, card, 'chance')
-        elif space_type == 'community_chest':
-            card = self.card_manager.draw_community_chest()
-            return self._apply_card(player, card, 'community_chest')
-        
-        return "safe"
+        self._next_turn()
+        return log
 
-    def _handle_property(self, player: Player, space: Dict):
-        owner_id = space['owner']
-        
-        if owner_id is None:
-            # AI Hook for Buying
-            if self._ai_decision_buy(player, space):
-                if player.pay(space['price']):
-                    self.bank.deposit(space['price'])
-                    space['owner'] = player.id
-                    player.properties.append(space['index'])
-                    return "bought_property"
-            return "passed_property"
+    def _handle_property(self, player, space, log):
+        if space['owner'] is None:
+            if player.cash > space['price']:
+                player.buy_property(space)
+                space['owner'] = player.id
+                log['result'] = "bought_property"
+            else:
+                log['result'] = "pass_no_money"
+        elif space['owner'] != player.id:
+            rent = space['rent']
+            amount = player.pay(rent)
+            owner = self.players[space['owner']]
+            owner.receive(amount)
+            log['result'] = f"paid_rent_{amount}"
+        else:
+            log['result'] = "already_owned"
 
-        elif owner_id != player.id:
-            if not space['mortgaged']:
-                rent = self._calculate_rent(space, roll_val=0) 
-                player.pay(rent)
-                self.players[owner_id].receive(rent)
-                return f"paid_rent_{rent}"
-        
-        return "owned_by_self"
-
-    def _calculate_rent(self, space: Dict, roll_val: int) -> int:
-        if space['group'] in ['Utility']:
-            return 28 
-        if space['group'] == 'Station':
-            owner_props = [p for p in self.players[space['owner']].properties if self.board.get_space(p)['group'] == 'Station']
-            count = len(owner_props)
-            return [0, 25, 50, 100, 200][count] if count <= 4 else 200
-            
-        houses = space['houses']
-        if houses == 0:
-             return space['rent'][0] 
-        return space['rent'][houses]
-
-    # --- DECISION HOOKS (To be overridden by AI) ---
-    def _ai_decision_buy(self, player: Player, space: Dict) -> bool:
-        """Default Heuristic: Buy if affordable."""
-        return player.cash > space['price'] + 50
-
-    def _ai_decision_trade(self, player: Player) -> bool:
-        """Default Heuristic: Never initiate trades."""
-        return False
-
-    # --- TRADING LOGIC ---
-    def _execute_trade_attempt(self, player: Player):
+    def try_smart_trade(self, player_idx):
         """
-        Attempts to find a 'Set Completer' property owned by another player
-        and buys it for cash.
+        PRIORITY 3 & 4: Set Completer with Defensive Awareness.
         """
-        # 1. Identify needed properties
-        # Simple Logic: Look at groups where I own at least 1 property, but not all.
-        owned_groups = {}
-        for pid in player.properties:
-            prop = self.board.get_space(pid)
-            grp = prop['group']
-            if grp not in owned_groups: owned_groups[grp] = []
-            owned_groups[grp].append(pid)
-            
-        target_prop_index = None
-        target_owner_id = None
+        player = self.players[player_idx]
         
-        # Find the first missing piece of a set
-        for grp, pids in owned_groups.items():
-            # Get all props in this group from board
-            all_in_group = [s for s in self.board.spaces if s.get('group') == grp]
-            if len(pids) < len(all_in_group):
-                # We are missing one! Find who has it.
-                for space in all_in_group:
-                    if space['index'] not in pids:
-                        if space['owner'] is not None and space['owner'] != player.id:
-                            target_prop_index = space['index']
-                            target_owner_id = space['owner']
-                            break
-            if target_prop_index: break
-            
-        if not target_prop_index:
-            return None # Nothing useful to trade for
+        # 1. Identify "Missing Links"
+        target_group = None
+        missing_id = None
+        
+        for group, ids in self.board.color_groups.items():
+            owned_count = sum(1 for i in ids if self.board.spaces[i]['owner'] == player.id)
+            if owned_count == len(ids) - 1:
+                # We are 1 away!
+                for i in ids:
+                    if self.board.spaces[i]['owner'] != player.id and self.board.spaces[i]['owner'] is not None:
+                        target_group = group
+                        missing_id = i
+                        break
+            if target_group: break
+        
+        if not target_group:
+            return False, "no_strategic_targets"
 
-        # 2. Formulate Offer (Face Value * 2)
-        target_space = self.board.get_space(target_prop_index)
-        offer_price = target_space['price'] * 2
+        # 2. Formulate Offer
+        target_space = self.board.spaces[missing_id]
+        target_owner_id = target_space['owner']
+        target_owner = self.players[target_owner_id]
         
-        # Check affordability
-        if player.cash < offer_price:
-            return None
-
-        # 3. Opponent Decision (Heuristic)
-        # Opponent accepts if they have low cash (< 500) OR if the offer is huge (3x price - though we offered 2x)
-        # For now, let's say Opponent accepts if they are NOT close to a monopoly themselves in that group
-        opponent = self.players[target_owner_id]
+        # Base Offer: 2.5x Market Value (Increased from 2.0x because bots are smarter now)
+        offer_price = int(target_space['price'] * 2.5)
         
-        if opponent.cash < 500: # Need cash badly
-            # EXECUTE TRADE
+        # 3. Defensive Check (Self-Awareness)
+        # If we know this trade completes our set, we know the opponent *should* charge us more.
+        # We increase our offer to 4x to tempt them, IF we have the cash.
+        if player.cash > (offer_price * 2):
+            offer_price = int(target_space['price'] * 4.0)
+        
+        # Do we have the cash?
+        if player.cash < offer_price + 20: 
+            return False, "too_poor_to_trade"
+            
+        # 4. Propose to Opponent
+        # We now pass 'player' (the buyer) so the seller knows who they are dealing with
+        if self._accept_trade(target_owner, offer_price, target_space, player):
+            # Execute
             player.pay(offer_price)
-            opponent.receive(offer_price)
+            target_owner.receive(offer_price)
             
-            # Transfer Deed
             target_space['owner'] = player.id
-            opponent.properties.remove(target_prop_index)
-            player.properties.append(target_prop_index)
+            player.properties.append(target_space)
+            target_owner.properties = [p for p in target_owner.properties if p['id'] != missing_id]
             
-            return f"trade_success_bought_{target_space['name']}"
+            return True, f"traded_for_{target_space['name']}"
             
-        return "trade_rejected"
+        return False, "offer_rejected"
 
-    def _apply_card(self, player: Player, card: Dict, deck_type: str):
-        if not card: return "no_card"
-        action = card['action']
-        val = card['value']
-        if action == 'move_abs':
-            player.position = val
-            return f"moved_to_{val}"
-        elif action == 'earn':
-            amount = self.bank.withdraw(val)
-            player.receive(amount)
-        elif action == 'pay':
-            if player.pay(val):
-                self.bank.deposit(val)
-        elif action == 'go_jail':
-            player.go_to_jail()
-        return f"card_{action}"
+    def _accept_trade(self, seller, cash_offer, property_at_stake, buyer):
+        """
+        PRIORITY 4: Defensive Blocking.
+        The seller decides based on value AND threat level.
+        """
+        valuation = property_at_stake['price']
+        
+        # 1. DETECT THREAT (Kingmaker Scenario)
+        # Does this trade give the BUYER a monopoly?
+        group = property_at_stake['group']
+        group_ids = self.board.color_groups.get(group, [])
+        
+        # Count what the buyer ALREADY has
+        buyer_owns = sum(1 for i in group_ids if self.board.spaces[i]['owner'] == buyer.id)
+        
+        # If they have (Total - 1), this card is the final piece.
+        completes_monopoly = (buyer_owns == len(group_ids) - 1)
 
-    def _handle_jail_turn(self, player: Player):
-        roll, is_double = self.dice.roll()
-        if is_double:
-            player.in_jail = False
-            player.move(roll)
-            return {"event": "jail_escape_doubles"}
-        player.turns_in_jail += 1
-        if player.turns_in_jail >= 3:
-            if player.pay(50):
-                self.bank.deposit(50)
-                player.in_jail = False
-                player.move(roll)
-                return {"event": "jail_forced_exit"}
-        self._next_player()
-        return {"event": "jail_stay"}
+        # 2. DECISION LOGIC
+        if completes_monopoly:
+            
+            # This is a dangerous trade.
+            # If the seller is wealthy, they should flat out REFUSE to help the enemy.
+            if seller.cash > 300:
+                return False 
+            
+            # If seller is poor/average, they demand a 'Kingmaker Premium' (5x value)
+            return cash_offer > (valuation * 5.0)
 
-    def _next_player(self):
+        # 3. Standard Trade (Non-threatening)
+        # If I am broke, I sell cheap
+        if seller.cash < 100:
+            return cash_offer > valuation
+            
+        # Normal greed
+        return cash_offer > (valuation * 2.5)
+
+    def _next_turn(self):
         self.current_player_idx = (self.current_player_idx + 1) % len(self.players)
+        self.turn_count += 1
