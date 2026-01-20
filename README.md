@@ -1,84 +1,105 @@
-Monopoly: Digital Twin & Analyst Agent
-Monopoly, but with Neural learning.
+# 🎩 LucenFlow Monopoly Digital Twin
 
-Built along side Gemini Code.
+A Reinforcement Learning (RL) environment where an AI Agent learns to master the game of Monopoly. Moving beyond simple rules, this "Digital Twin" develops advanced strategies for **risk management**, **property valuation**, and **negotiation**.
 
-It’s a proof-of-concept demonstrating how to combine a Simulation Engine, a Reinforcement Learning Agent, and a Local LLM Analyst into a single system.
+## 🚀 Project Status: "Grandmaster" Level
+The AI has evolved from a random bot to a strategic player. It currently implements:
 
-I built this to test how autonomous agents negotiate, trade, and react to financial pressure in a closed environment.
+1.  **Statistical Valuation (The Heatmap):** The AI knows that **Orange** properties are mathematically more valuable than **Green** ones due to the high frequency of players exiting Jail.
+2.  **Liquidity Risk (The Panic Button):** The AI understands that *Cash is Survival*. It will refuse to buy properties—even valuable ones—if doing so drops its cash reserves into the "Danger Zone" (< £200).
+3.  **Synergy Trading:** The AI actively identifies "Missing Links" (properties needed to complete a color set) and proposes trades to acquire them.
+4.  **Defensive Blocking:** Opponents (and the AI) recognize "Kingmaker Trades." They will reject offers that give another player a Monopoly unless paid a massive premium (5x value).
 
-🏗 The Architecture
-The project is split into three distinct nodes:
+---
 
-The Engine (Simulation): A custom-built Python environment that enforces the strict rules of Monopoly (Auctions, Gaol, Housing shortages, etc.).
+## 🛠️ Project Structure
 
-The Brain (RL Agent): A PyTorch-based Deep Q-Network (DQN).
+monopoly_digital_twin/
+├── ai/
+│   ├── rl_agent.py       # The Brain (Deep Q-Network)
+│   ├── state_encoder.py  # The Eyes (Converts board state to 176 inputs)
+│   └── trainer.py        # The Dojo (Training loop with advanced rewards)
+├── core/
+│   ├── engine.py         # The Physics (Game logic, trading rules, defensive checks)
+│   └── player.py         # The Actor (Asset tracking, net worth calc)
+├── dashboard/
+│   └── app.py            # The Command Center (Streamlit visualization)
+├── models/
+│   └── monopoly_ai_trading.pth  # The Saved Brain
+├── requirements.txt      # Dependencies
+└── README.md
+💻 Installation (Windows CPU)
+This project is optimized for running on standard hardware (Intel/AMD CPUs) without requiring heavy GPU drivers.
 
-Training: Trained over 2,000 episodes.
+1. Prerequisites
+Python 3.11+
 
-Behavior: It doesn't just play like an automated bot.  It understands asset value. It learned from scratch that trading is better than hoarding cash.
+2. Setup Environment
+PowerShell
+# Create Virtual Environment
+py -3.11 -m venv venv
 
-Hardware: Optimized for AMD GPUs (ROCm 6.1) on Linux.
+# Activate (PowerShell)
+.\venv\Scripts\Activate.ps1
+3. Install Dependencies
+Crucial: Install the CPU-only version of PyTorch first to save space and avoid errors.
 
-The Analyst (Llama 3):
+PowerShell
+# 1. Install PyTorch (CPU Version)
+pip install torch torchvision torchaudio --index-url [https://download.pytorch.org/whl/cpu](https://download.pytorch.org/whl/cpu)
 
-A local LLM running in a Docker container (Ollama).
-
-It watches the game logs in real-time.
-
-It generates "Sports Commentator" style narrative, analyzing strategies and roasting players who go bankrupt.
-
-🚀 The Stack
-Language: Python 3.11
-
-ML Framework: PyTorch (ROCm backend for AMD 7900 XT support)
-
-LLM Serving: Docker + Ollama (llama3 model)
-
-Visualization: Streamlit (Real-time dashboard)
-
-🛠 Setup & Installation
-I developed this on Fedora Linux with an AMD GPU. If you are on NVIDIA or CPU, PyTorch should handle the fallback automatically, but the training times will vary.
-
-1. Environment
-Bash
-# Clone and setup
-git clone https://github.com/BriScanlon/monopoly_digital_twin.git
-cd monopoly_digital_twin
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
+# 2. Install Project Requirements
 pip install -r requirements.txt
-(Note: If you are on AMD Linux, ensure you grab the ROCm version of PyTorch explicitly).
+🎮 Usage
+1. Train the AI
+Run the training loop to teach the AI. It will play thousands of games against "Defensive Bots."
 
-2. The Analyst (Docker)
-You need Ollama running locally to handle the commentary.
+Watch for: 💰 AI MADE A DEAL! logs (rare but valuable).
 
-Bash
-docker run -d \
-  --device /dev/kfd --device /dev/dri \
-  -v ollama:/root/.ollama \
-  -p 11434:11434 \
-  --name ollama \
-  ollama/ollama:rocm
+Duration: ~20 minutes for 2000 episodes on a modern CPU.
 
-# Pull the model
-docker exec -it ollama ollama run llama3
-🎮 Running the Digital Twin
-1. Retrain the Brain (Optional)
-If you want to create your own model from scratch:
-
-Bash
+PowerShell
 python -m ai.trainer
-Creates models/monopoly_ai_trading.pth
+2. Run the Dashboard
+Visualize the AI's decision-making in real-time. Watch the Confidence Bars to see it choose between Pass, Buy, and Trade.
 
-2. Launch the Dashboard
-This brings up the visual interface where you can watch the AI play against itself and read the live analysis.
+PowerShell
+# Set path and run (PowerShell)
+$env:PYTHONPATH = "."; streamlit run dashboard/app.py
+🧠 AI Strategy Breakdown
+The Input (State Encoder)
+The AI sees the board as a vector of 176 numbers, including:
 
-Bash
-PYTHONPATH=. streamlit run dashboard/app.py
-📊 Observations
-Trading Logic: The agent attempts trades on ~65% of turns. It realised that "asking is free."
+Self: Cash, Net Worth, Jail Status.
 
-Validation: In a 500-game simulation, win rates were evenly distributed, proving the model is stable and not relying on first-mover advantage.
+Opponents: Cash, Net Worth, Properties owned.
+
+Board: For every property, it sees:
+
+Ownership status.
+
+Heatmap Score: A hardcoded probability multiplier (e.g., Orange = 1.2x, Green = 0.8x).
+
+The Logic (Reward Function)
+The AI is not just rewarded for winning; it is shaped by specific incentives:
+
+Survival: +0.1 per turn alive.
+
+Trade Success: +30.0 for completing a set.
+
+Panic Penalty: -20.0 if Cash drops below £50 (teaches hoarding).
+
+Bankruptcy: -500.0 (The ultimate failure).
+
+The Trading Engine
+When the AI chooses Action 2 (Trade):
+
+It scans the board for a color group where it owns N-1 properties.
+
+It identifies the owner of the missing card.
+
+It calculates a "Fair Offer" (2.5x Market Price).
+
+Defensive Check: The opponent checks if this trade will give the AI a Monopoly. If yes, the opponent demands a 5x Premium.
+
+If the AI has enough cash to pay the premium, the deal is struck.
