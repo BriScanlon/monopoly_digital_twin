@@ -1,5 +1,5 @@
 Monopoly: Digital Twin & Analyst Agent
-Monopoly, but with Nueral learning.
+Monopoly, but with Neural learning.
 
 Built along side Gemini Code.
 
