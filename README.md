@@ -1,4 +1,4 @@
-# 🎩 LucenFlow Monopoly Digital Twin
+# 🎩 Monopoly Digital Twin
 
 A Reinforcement Learning (RL) environment where an AI Agent learns to master the game of Monopoly. Moving beyond simple rules, this "Digital Twin" develops advanced strategies for **risk management**, **property valuation**, and **negotiation**.
 
