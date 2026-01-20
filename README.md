@@ -12,22 +12,6 @@ The AI has evolved from a random bot to a strategic player. It currently impleme
 
 ---
 
-## 🛠️ Project Structure
-
-monopoly_digital_twin/
-├── ai/
-│   ├── rl_agent.py       # The Brain (Deep Q-Network)
-│   ├── state_encoder.py  # The Eyes (Converts board state to 176 inputs)
-│   └── trainer.py        # The Dojo (Training loop with advanced rewards)
-├── core/
-│   ├── engine.py         # The Physics (Game logic, trading rules, defensive checks)
-│   └── player.py         # The Actor (Asset tracking, net worth calc)
-├── dashboard/
-│   └── app.py            # The Command Center (Streamlit visualization)
-├── models/
-│   └── monopoly_ai_trading.pth  # The Saved Brain
-├── requirements.txt      # Dependencies
-└── README.md
 💻 Installation (Windows CPU)
 This project is optimized for running on standard hardware (Intel/AMD CPUs) without requiring heavy GPU drivers.
 
