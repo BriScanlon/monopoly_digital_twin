@@ -47,7 +47,7 @@ python -m ai.trainer
 2. Run the Dashboard
 Visualize the AI's decision-making in real-time. Watch the Confidence Bars to see it choose between Pass, Buy, and Trade.
 
-PowerShell
+# PowerShell
 # Set path and run (PowerShell)
 $env:PYTHONPATH = "."; streamlit run dashboard/app.py
 🧠 AI Strategy Breakdown
